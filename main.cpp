@@ -1,5 +1,6 @@
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 #include <iostream>
 #include <vector>
 #include <cstdlib>
@@ -13,23 +14,57 @@
 
 using namespace std;
 
-const int WINDOW_WIDTH = 800;
-const int WINDOW_HEIGHT = 300;
-const int BAR_WIDTH = 10;
+// ANSI escape codes for colors
+const string RESET = "\033[0m";
+const string RED = "\033[31m";
+const string GREEN = "\033[32m";
+const string YELLOW = "\033[33m";
+const string BLUE = "\033[34m";
+const string MAGENTA = "\033[35m";
+const string CYAN = "\033[36m";
+const string WHITE = "\033[37m";
+
+#ifdef _WIN32
+void clearScreen() {
+    system("cls");
+}
+#else
+void clearScreen() {
+    system("clear");
+}
+#endif
+
+const int WINDOW_WIDTH = 1400;
+const int WINDOW_HEIGHT = 230;
+const int BAR_GAP = 5;
+const int MAX_VISUALIZATIONS = 3;
 
 SDL_Window* windows[6] = {nullptr};
 SDL_Renderer* renderers[6] = {nullptr};
+TTF_Font* font = nullptr;
 
 bool quit = false;
-bool paused = false; // New variable to control pause state
-int delay = 100; // Default delay for speed
+bool paused = false;
+int delay = 100;
 
 std::mutex mtx;
 std::condition_variable cv;
+std::mutex render_mtx;
 
 bool init(int options[], int count) {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         std::cerr << "SDL could not initialize! SDL_Error: " << SDL_GetError() << std::endl;
+        return false;
+    }
+
+    if (TTF_Init() < 0) {
+        std::cerr << "SDL_ttf could not initialize! TTF_Error: " << TTF_GetError() << std::endl;
+        return false;
+    }
+
+    font = TTF_OpenFont("arial.ttf", 13);
+    if (!font) {
+        std::cerr << "Failed to load font! TTF_Error: " << TTF_GetError() << std::endl;
         return false;
     }
 
@@ -43,7 +78,10 @@ bool init(int options[], int count) {
         }
 
         int i = opt - 1;
-        windows[i] = SDL_CreateWindow(titles[i].c_str(), SDL_WINDOWPOS_CENTERED + (i % 2) * WINDOW_WIDTH, SDL_WINDOWPOS_CENTERED + (i / 2) * WINDOW_HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_SHOWN);
+        int posX = 20;
+        int posY = 40 + (i % 3) * (WINDOW_HEIGHT + 30);
+
+        windows[i] = SDL_CreateWindow(titles[i].c_str(), posX, posY, WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_SHOWN);
         if (!windows[i]) {
             std::cerr << "Window could not be created! SDL_Error: " << SDL_GetError() << std::endl;
             SDL_Quit();
@@ -65,7 +103,81 @@ void close() {
         if (renderers[i]) SDL_DestroyRenderer(renderers[i]);
         if (windows[i]) SDL_DestroyWindow(windows[i]);
     }
+    TTF_CloseFont(font);
+    font = nullptr;
+    TTF_Quit();
     SDL_Quit();
+}
+
+void renderText(SDL_Renderer* renderer, const std::string& text, int x, int y) {
+    SDL_Color color = {255, 255, 255};  // White color for text
+    SDL_Surface* surfaceMessage = TTF_RenderText_Solid(font, text.c_str(), color);
+    if (!surfaceMessage) {
+        std::cerr << "Failed to create surface for text! TTF_Error: " << TTF_GetError() << std::endl;
+        return;
+    }
+
+    SDL_Texture* message = SDL_CreateTextureFromSurface(renderer, surfaceMessage);
+    if (!message) {
+        std::cerr << "Failed to create texture from surface! SDL_Error: " << SDL_GetError() << std::endl;
+        SDL_FreeSurface(surfaceMessage);
+        return;
+    }
+
+    SDL_Rect messageRect = {x, y, surfaceMessage->w, surfaceMessage->h};
+
+    SDL_RenderCopy(renderer, message, nullptr, &messageRect);
+    SDL_FreeSurface(surfaceMessage);
+    SDL_DestroyTexture(message);
+}
+
+void renderSort(SDL_Renderer* renderer, const std::vector<int>& arr, size_t currentIndex, size_t secondIndex, const std::string& mode) {
+    std::lock_guard<std::mutex> lock(render_mtx);
+    SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xFF);
+    SDL_RenderClear(renderer);
+
+    int numElements = arr.size();
+    int barWidth = (WINDOW_WIDTH - (BAR_GAP * (numElements - 1))) / numElements;
+
+    for (size_t i = 0; i < arr.size(); ++i) {
+        int height = (arr[i] * (WINDOW_HEIGHT - 40)) / 100;
+        SDL_Rect bar = {static_cast<int>(i * (barWidth + BAR_GAP)), WINDOW_HEIGHT - height - 30, barWidth, height};
+
+        if (mode == "update") {
+            SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF);
+        } else if (mode == "selection") {
+            if (i == currentIndex) {
+                SDL_SetRenderDrawColor(renderer, 0xFF, 0x00, 0x00, 0xFF);
+            } else if (i == secondIndex) {
+                SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF);
+            } else {
+                SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF);
+            }
+        } else if (mode == "insertion") {
+            if (i < currentIndex) {
+                SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF);
+            } else if (i == secondIndex) {
+                SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF);
+            } else {
+                SDL_SetRenderDrawColor(renderer, 0xFF, 0x00, 0x00, 0xFF);
+            }
+        } else {
+            if (i == currentIndex) {
+                SDL_SetRenderDrawColor(renderer, 0xFF, 0x00, 0x00, 0xFF);
+            } else if (i == secondIndex) {
+                SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF);
+            } else {
+                SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF);
+            }
+        }
+
+        SDL_RenderFillRect(renderer, &bar);
+
+        int textYPos = std::max(WINDOW_HEIGHT - height - 30 - 20, 0);
+        renderText(renderer, std::to_string(arr[i]), static_cast<int>(i * (barWidth + BAR_GAP)), textYPos);
+    }
+
+    SDL_RenderPresent(renderer);
 }
 
 void handleEvents() {
@@ -74,88 +186,60 @@ void handleEvents() {
         if (e.type == SDL_QUIT) {
             std::lock_guard<std::mutex> lock(mtx);
             quit = true;
-            cv.notify_all(); // Notify all threads to exit
+            cv.notify_all();
         }
         else if (e.type == SDL_KEYDOWN) {
             std::lock_guard<std::mutex> lock(mtx);
             if (e.key.keysym.sym == SDLK_ESCAPE) {
                 quit = true;
-                cv.notify_all(); // Notify all threads to exit
+                cv.notify_all();
             }
-            else if (e.key.keysym.sym == SDLK_p) { // Pause/Resume with 'P' key
+            else if (e.key.keysym.sym == SDLK_p) {
                 paused = !paused;
                 if (paused) {
-                    std::cout << "Paused. Press 'P' to resume.\n";
+                    clearScreen();
+                    std::cout << RED << "Paused. Press 'P' to resume." << RESET << "\n";
                 } else {
-                    cv.notify_all(); // Resume all threads
+                    cv.notify_all();
                 }
             }
-            else if (e.key.keysym.sym == SDLK_RIGHT) { // Speed up with 'Right Arrow'
+            else if (e.key.keysym.sym == SDLK_RIGHT) {
                 if (delay > 10) {
+                    clearScreen();
                     delay -= 10;
-                    std::cout << "Speed increased. Delay: " << delay << "ms\n";
+                    std::cout << GREEN << "Speed increased. Delay: " << delay << "ms" << RESET << "\n";
                 }
             }
-            else if (e.key.keysym.sym == SDLK_LEFT) { // Slow down with 'Left arrow'
+            else if (e.key.keysym.sym == SDLK_LEFT) {
+                clearScreen();
                 delay += 10;
-                std::cout << "Speed decreased. Delay: " << delay << "ms\n";
+                std::cout << YELLOW << "Speed decreased. Delay: " << delay << "ms" << RESET << "\n";
+            }
+            else if (e.key.keysym.sym == SDLK_0) {
+                std::vector<int> newArr(80);
+                for (int i = 0; i < 80; ++i) {
+                    newArr[i] = std::rand() % 100;
+                }
+                for (int i = 0; i < 6; ++i) {
+                    renderSort(renderers[i], newArr, 0, 0, "update");
+                }
+                clearScreen();
+                std::cout << BLUE << "New array generated and visualized." << RESET << "\n";
             }
         }
     }
-}
-
-void renderSort(SDL_Renderer* renderer, const std::vector<int>& arr, size_t currentIndex, size_t secondIndex, const std::string& mode) {
-    SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xFF); // Black color for bars
-    SDL_RenderClear(renderer);
-    
-    for (size_t i = 0; i < arr.size(); ++i) {
-        int height = (arr[i] * (WINDOW_HEIGHT - 20)) / 100; // Scale height
-        SDL_Rect bar = {static_cast<int>(i * BAR_WIDTH), WINDOW_HEIGHT - height - 20, BAR_WIDTH - 1, height};
-        
-        if (mode == "selection") {
-            if (i == currentIndex) {
-                SDL_SetRenderDrawColor(renderer, 0xFF, 0x00, 0x00, 0xFF); // Red for current index
-            } else if (i == secondIndex) {
-                SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF); // Blue for min index
-            } else {
-                SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF); // Green for sorted parts
-            }
-        } else if (mode == "insertion") {
-            if (i < currentIndex) {
-                SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF); // Green for sorted parts
-            } else if (i == secondIndex) {
-                SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF); // Blue for index being inserted
-            } else {
-                SDL_SetRenderDrawColor(renderer, 0xFF, 0x00, 0x00, 0xFF); // Red for unsorted parts
-            }
-        } else {
-            if (i == currentIndex) {
-                SDL_SetRenderDrawColor(renderer, 0xFF, 0x00, 0x00, 0xFF); // Red for the current index
-            } else if (i == secondIndex) {
-                SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0xFF, 0xFF); // Blue for the second index
-            } else {
-                SDL_SetRenderDrawColor(renderer, 0x00, 0xFF, 0x00, 0xFF); // Green for sorted parts
-            }
-        }
-        
-        SDL_RenderFillRect(renderer, &bar);
-    }
-    
-    SDL_RenderPresent(renderer);
 }
 
 void waitForResume() {
     std::unique_lock<std::mutex> lock(mtx);
     while (paused && !quit) {
         cv.wait(lock);
-        handleEvents(); // Check for quit event while paused
+        handleEvents(); 
     }
-    // Check for quit after resuming
     if (quit) {
-        lock.unlock(); // Unlock before exiting the function
+        lock.unlock();
     }
 }
-
 
 void selectionSort(std::vector<int>& arr, SDL_Renderer* renderer) {
     for (size_t i = 0; i < arr.size() - 1; ++i) {
@@ -164,9 +248,9 @@ void selectionSort(std::vector<int>& arr, SDL_Renderer* renderer) {
             handleEvents();
             {
                 std::lock_guard<std::mutex> lock(mtx);
-                if (quit) return;  // Exit if quit is flagged
+                if (quit) return;
             }
-            waitForResume(); // Wait if paused
+            waitForResume();
             if (arr[j] < arr[minIndex]) {
                 minIndex = j;
             }
@@ -184,13 +268,13 @@ void insertionSort(std::vector<int>& arr, SDL_Renderer* renderer) {
         int key = arr[i];
         size_t j = i - 1;
 
-        while (j >= 0 && arr[j] > key) { 
+        while (j < arr.size() && arr[j] > key) {
             handleEvents();
             {
                 std::lock_guard<std::mutex> lock(mtx);
-                if (quit) return;  // Exit if quit is flagged
+                if (quit) return;
             }
-            waitForResume(); // Wait if paused
+            waitForResume();
             arr[j + 1] = arr[j];
             renderSort(renderer, arr, i, j + 1, "insertion");
             j--;
@@ -208,9 +292,9 @@ void bubbleSort(std::vector<int>& arr, SDL_Renderer* renderer) {
             handleEvents();
             {
                 std::lock_guard<std::mutex> lock(mtx);
-                if (quit) return;  // Exit if quit is flagged
+                if (quit) return;  
             }
-            waitForResume(); // Wait if paused
+            waitForResume(); 
             if (arr[j] > arr[j + 1]) {
                 std::swap(arr[j], arr[j + 1]);
             }
@@ -233,9 +317,9 @@ void merge(std::vector<int>& arr, int left, int mid, int right, SDL_Renderer* re
         handleEvents();
         {
             std::lock_guard<std::mutex> lock(mtx);
-            if (quit) return;  // Exit if quit is flagged
+            if (quit) return;  
         }
-        waitForResume(); // Wait if paused
+        waitForResume(); 
         if (L[i] <= R[j]) {
             arr[k++] = L[i++];
         } else {
@@ -249,9 +333,9 @@ void merge(std::vector<int>& arr, int left, int mid, int right, SDL_Renderer* re
         handleEvents();
         {
             std::lock_guard<std::mutex> lock(mtx);
-            if (quit) return;  // Exit if quit is flagged
+            if (quit) return;  
         }
-        waitForResume(); // Wait if paused
+        waitForResume(); 
         arr[k++] = L[i++];
         renderSort(renderer, arr, k - 1, -1, "merge");
         SDL_Delay(delay);
@@ -260,9 +344,9 @@ void merge(std::vector<int>& arr, int left, int mid, int right, SDL_Renderer* re
         handleEvents();
         {
             std::lock_guard<std::mutex> lock(mtx);
-            if (quit) return;  // Exit if quit is flagged
+            if (quit) return;  
         }
-        waitForResume(); // Wait if paused
+        waitForResume(); 
         arr[k++] = R[j++];
         renderSort(renderer, arr, k - 1, -1, "merge");
         SDL_Delay(delay);
@@ -280,15 +364,15 @@ void mergeSort(std::vector<int>& arr, int left, int right, SDL_Renderer* rendere
 
 void quickSort(std::vector<int>& arr, int low, int high, SDL_Renderer* renderer) {
     if (low < high) {
-        int pivot = arr[high]; // choose rightmost element as pivot
+        int pivot = arr[high];
         int i = low - 1;
         for (int j = low; j <= high - 1; ++j) {
             handleEvents();
             {
                 std::lock_guard<std::mutex> lock(mtx);
-                if (quit) return;  // Exit if quit is flagged
+                if (quit) return;  
             }
-            waitForResume(); // Wait if paused
+            waitForResume(); 
             if (arr[j] < pivot) {
                 ++i;
                 std::swap(arr[i], arr[j]);
@@ -315,39 +399,37 @@ void heapify(std::vector<int>& arr, int n, int i, SDL_Renderer* renderer) {
 
     if (largest != i) {
         std::swap(arr[i], arr[largest]);
-        renderSort(renderer, arr, largest, i, "heap"); // Visualize swap
-        SDL_Delay(delay); // Delay to visualize the change
+        renderSort(renderer, arr, largest, i, "heap");
+        SDL_Delay(delay);
         handleEvents();
         {
             std::lock_guard<std::mutex> lock(mtx);
-            if (quit) return;  // Exit if quit is flagged
+            if (quit) return;  
         }
-        waitForResume(); // Wait if paused
+        waitForResume(); 
         heapify(arr, n, largest, renderer);
     }
 }
 
 void heapSort(std::vector<int>& arr, SDL_Renderer* renderer) {
     int n = arr.size();
-    // Build heap (rearrange array)
     for (int i = n / 2 - 1; i >= 0; i--) {
         heapify(arr, n, i, renderer);
-        renderSort(renderer, arr, i, -1, "heap"); // Visualize heap formation
-        SDL_Delay(delay); // Delay to visualize the heap building
+        renderSort(renderer, arr, i, -1, "heap");
+        SDL_Delay(delay);
     }
-    // One by one extract an element from heap
     for (int i = n - 1; i > 0; i--) {
         std::swap(arr[0], arr[i]);
-        renderSort(renderer, arr, i, -1, "heap"); // Visualize the array after swap
-        SDL_Delay(delay); // Delay to visualize the change
+        renderSort(renderer, arr, i, -1, "heap");
+        SDL_Delay(delay);
         heapify(arr, i, 0, renderer);
     }
 }
 
 void executeSorting(int option) {
-    std::vector<int> arr(80);
-    for (int i = 0; i < 80; ++i) {
-        arr[i] = std::rand() % 100; // Random values between 0 and 99
+    std::vector<int> arr(70);
+    for (int i = 0; i < 70; ++i) {
+        arr[i] = std::rand() % 100;
     }
 
     switch (option) {
@@ -373,30 +455,145 @@ void executeSorting(int option) {
             std::cerr << "Invalid option!" << std::endl;
             break;
     }
-
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        quit = true; // Set quit flag to true after sorting is done
-    }
-    cv.notify_all(); // Notify all threads to exit
 }
 
-void showMenu() {
-    std::cout << "Main Menu:\n";
-    std::cout << "1. One Visualization\n";
-    std::cout << "2. Multiple Visualizations\n";
-    std::cout << "3. Change Speed\n";
-    std::cout << "4. Exit\n";
-    std::cout << "Enter your choice: ";
+void showWelcomeMessage() {
+    clearScreen();
+ 
+   
+    cout << CYAN << "==============================" << RESET << endl;
+    cout << YELLOW << "  Welcome to the Sorting Visualizer!" << RESET << endl;
+    cout << CYAN << "==============================" << RESET << endl;
+    cout << GREEN << "This sorting visualizer visualizes multiple sorting algorithms:" << RESET << endl;
+    cout << GREEN << " - Insertion Sort" << RESET << endl;
+    cout << GREEN << " - Selection Sort" << RESET << endl;
+    cout << GREEN << " - Merge Sort" << RESET << endl;
+    cout << GREEN << " - Bubble Sort" << RESET << endl;
+    cout << GREEN << " - Quick Sort" << RESET << endl;
+    cout << GREEN << " - Heap Sort" << RESET << endl;
+    cout << BLUE << "\nYou can speed up or slow down using the left and right arrow keys, respectively." << RESET << endl;
+    cout << BLUE << "Press 'P' to pause and 'ESC' to quit the window." << RESET << endl;
+    cout << RED << "\nCaution: Pressing multiple keys during multiple visualizations may cause the program to crash!" << RESET << endl;
+    cout << CYAN << "\nPress 'Y' to continue to the main menu..." << RESET << endl;
+
+
+
+    char response;
+    std::cin >> response;
+    while (response != 'Y' && response != 'y') {
+        std::cout << RED << "Invalid input! Please press 'Y' to continue." << RESET << std::endl;
+        std::cin >> response;
+    }
+}
+
+void showmenu(){
+        cout << CYAN << "=====================" << RESET << endl;
+        cout << YELLOW << "  Main Menu\n" << RESET;
+        cout << CYAN << "=====================" << RESET << endl;
+        cout << GREEN << "1. One Visualization\n" << RESET;
+        cout << GREEN << "2. Multiple Visualizations\n" << RESET;
+        cout << GREEN << "3. Change Speed\n" << RESET;
+        cout << GREEN << "4. Exit\n" << RESET;
+        cout << BLUE << "Enter your choice: " << RESET;
+}
+void showSingleVisualizationMenu() {
+    clearScreen();
+    int sortOption;
+    std::cout << "Select sorting algorithm to visualize:\n";
+    std::cout << GREEN << "1. Selection Sort\n" << RESET;
+    std::cout << GREEN << "2. Insertion Sort\n" << RESET;
+    std::cout << GREEN << "3. Bubble Sort\n" << RESET;
+    std::cout << GREEN << "4. Merge Sort\n" << RESET;
+    std::cout << GREEN << "5. Quick Sort\n" << RESET;
+    std::cout << GREEN << "6. Heap Sort\n" << RESET;
+    std::cout << BLUE << "Enter your choice (1-6): " << RESET;
+    std::cin >> sortOption;
+
+    if (std::cin.fail() || sortOption < 1 || sortOption > 6) {
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cerr << RED << "Invalid choice! Please enter a number between 1 and 6." << RESET << "\n";
+        return;
+    }
+
+    int options[] = {sortOption};
+    if (!init(options, 1)) {
+        return;
+    }
+
+    std::thread sortingThread(executeSorting, sortOption);
+    while (!quit) {
+        handleEvents();
+        SDL_Delay(10);
+    }
+    sortingThread.join();
+    close();
+    quit = false;
+}
+
+void showMultipleVisualizationsMenu() {
+    clearScreen();
+    int numSorts;
+    std::cout << "How many sorting algorithms to visualize (1-" << MAX_VISUALIZATIONS << "): ";
+    std::cin >> numSorts;
+
+    if (std::cin.fail() || numSorts < 1 || numSorts > MAX_VISUALIZATIONS) {
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cerr << RED << "Invalid number of visualizations! Please enter a number between 1 and " << MAX_VISUALIZATIONS << "." << RESET << "\n";
+        return;
+    }
+    clearScreen();
+
+    int options[6];
+    std::cout << "Select the sorting algorithms to visualize:\n";
+    std::cout << GREEN << "1. Selection Sort\n" << RESET;
+    std::cout << GREEN << "2. Insertion Sort\n" << RESET;
+    std::cout << GREEN << "3. Bubble Sort\n" << RESET;
+    std::cout << GREEN << "4. Merge Sort\n" << RESET;
+    std::cout << GREEN << "5. Quick Sort\n" << RESET;
+    std::cout << GREEN << "6. Heap Sort\n" << RESET;
+    for (int i = 0; i < numSorts; ++i) {
+        std::cout << BLUE << "Enter choice " << (i + 1) << " (1-6): " << RESET;
+        std::cin >> options[i];
+
+        if (std::cin.fail() || options[i] < 1 || options[i] > 6) {
+            std::cin.clear();
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            std::cerr << RED << "Invalid choice! Please enter a number between 1 and 6." << RESET << "\n";
+            --i; 
+        }
+    }
+
+    if (!init(options, numSorts)) {
+        return;
+    }
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < numSorts; ++i) {
+        threads.push_back(std::thread(executeSorting, options[i]));
+    }
+
+    while (!quit) {
+        handleEvents();
+        SDL_Delay(10);
+    }
+
+    for (auto& thread : threads) {
+        if (thread.joinable()) thread.join();
+    }
+    close();
+    quit = false;
 }
 
 void changeSpeed() {
+    clearScreen();
     int speedOption;
-    std::cout << "Select speed:\n";
-    std::cout << "1. Slow\n";
-    std::cout << "2. Medium\n";
-    std::cout << "3. Fast\n";
-    std::cout << "Enter your choice: ";
+    std::cout << CYAN << "Select speed:\n" << RESET;
+    std::cout << GREEN << "1. Slow\n" << RESET;
+    std::cout << GREEN << "2. Medium\n" << RESET;
+    std::cout << GREEN << "3. Fast\n" << RESET;
+    std::cout << BLUE << "Enter your choice: " << RESET;
     std::cin >> speedOption;
 
     switch (speedOption) {
@@ -410,117 +607,40 @@ void changeSpeed() {
             delay = 50;
             break;
         default:
-            std::cerr << "Invalid choice! Using default speed (Medium).\n";
+            std::cerr << RED << "Invalid choice! Using default speed (Medium).\n" << RESET;
             delay = 100;
             break;
     }
 }
 
+
+
 int main() {
     srand(static_cast<unsigned int>(time(0)));
 
+    showWelcomeMessage();
     int menuChoice;
     bool running = true;
 
     while (running) {
-        showMenu();
+        clearScreen();
+        showmenu();
         std::cin >> menuChoice;
 
         if (std::cin.fail() || menuChoice < 1 || menuChoice > 4) {
-            std::cin.clear(); // Clear the error flag
-            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n'); // Ignore invalid input
-            std::cerr << "Invalid choice! Please enter a number between 1 and 4.\n";
+            std::cin.clear();
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            std::cerr << RED << "Invalid choice! Please enter a number between 1 and 4." << RESET << "\n";
             continue;
         }
 
         switch (menuChoice) {
-            case 1: {
-                int sortOption;
-                std::cout << "Select sorting algorithm to visualize:\n";
-                std::cout << "1. Selection Sort\n";
-                std::cout << "2. Insertion Sort\n";
-                std::cout << "3. Bubble Sort\n";
-                std::cout << "4. Merge Sort\n";
-                std::cout << "5. Quick Sort\n";
-                std::cout << "6. Heap Sort\n";
-                std::cout << "Enter your choice (1-6): ";
-                std::cin >> sortOption;
-
-                if (std::cin.fail() || sortOption < 1 || sortOption > 6) {
-                    std::cin.clear();
-                    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                    std::cerr << "Invalid choice! Please enter a number between 1 and 6.\n";
-                    break;
-                }
-
-                int options[] = {sortOption};
-                if (!init(options, 1)) {
-                    return 1;
-                }
-
-                std::thread sortingThread(executeSorting, sortOption);
-                while (!quit) {
-                    handleEvents();
-                    SDL_Delay(10); // Small delay to prevent busy-waiting
-                }
-                if (sortingThread.joinable()) sortingThread.join();
-                close();
-                quit = false;
+            case 1:
+                showSingleVisualizationMenu();
                 break;
-            }
-            case 2: {
-                int numSorts;
-                std::cout << "How many sorting algorithms to visualize (1-6): ";
-                std::cin >> numSorts;
-
-                if (std::cin.fail() || numSorts < 1 || numSorts > 6) {
-                    std::cin.clear();
-                    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                    std::cerr << "Invalid number of visualizations! Please enter a number between 1 and 6.\n";
-                    break;
-                }
-
-                int options[6];
-                std::cout << "Select the sorting algorithms to visualize:\n";
-                std::cout << "1. Selection Sort\n";
-                std::cout << "2. Insertion Sort\n";
-                std::cout << "3. Bubble Sort\n";
-                std::cout << "4. Merge Sort\n";
-                std::cout << "5. Quick Sort\n";
-                std::cout << "6. Heap Sort\n";
-                for (int i = 0; i < numSorts; ++i) {
-                    std::cout << "Enter choice " << (i + 1) << " (1-6): ";
-                    std::cin >> options[i];
-
-                    if (std::cin.fail() || options[i] < 1 || options[i] > 6) {
-                        std::cin.clear();
-                        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                        std::cerr << "Invalid choice! Please enter a number between 1 and 6.\n";
-                        --i; // Retry the current input
-                    }
-                }
-
-                if (!init(options, numSorts)) {
-                    return 1;
-                }
-
-                std::vector<std::thread> threads;
-                for (int i = 0; i < numSorts; ++i) {
-                    threads.push_back(std::thread(executeSorting, options[i]));
-                }
-
-                while (!quit) {
-                    handleEvents();
-                    SDL_Delay(10); // Small delay to prevent busy-waiting
-                }
-
-                for (auto& thread : threads) {
-                    if (thread.joinable()) thread.join();
-                }
-                close();
-                quit = false;
+            case 2:
+                showMultipleVisualizationsMenu();
                 break;
-            }
             case 3:
                 changeSpeed();
                 break;
@@ -528,10 +648,11 @@ int main() {
                 running = false;
                 break;
             default:
-                std::cerr << "Invalid choice! Please enter a number between 1 and 4.\n";
+                std::cerr << RED << "Invalid choice! Please enter a number between 1 and 4." << RESET << "\n";
                 break;
         }
     }
 
+    close();
     return 0;
 }
